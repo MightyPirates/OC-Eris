@@ -1975,24 +1975,25 @@ u_thread(Info *info) {                                                 /* ... */
         thread->ci->u.c.old_errfunc = READ_VALUE(ptrdiff_t); */
         thread->ci->u.c.old_errfunc = 0;
 
-        if (thread->status == LUA_YIELD && READ_VALUE(uint8_t)) {
-          thread->ci->u.c.ctx = READ_VALUE(int);
-          LOCK(thread);
-          unpersist(info);                                  /* ... thread func? */
-          UNLOCK(thread);
-          if (lua_iscfunction(info->L, -1)) {                /* ... thread func */
-            /* NOTE Ugly hack. See p_thread. */
-            thread->ci->u.c.k = (lua_KFunction)lua_tocfunction(info->L, -1);
+        thread->ci->u.c.ctx = 0;
+        thread->ci->u.c.k = NULL;
+
+        if (READ_VALUE(uint8_t)) {
+          if (thread->status == LUA_YIELD) {
+            thread->ci->u.c.ctx = READ_VALUE(int);
+            LOCK(thread);
+            unpersist(info);                                  /* ... thread func? */
+            UNLOCK(thread);
+            if (lua_iscfunction(info->L, -1)) {                /* ... thread func */
+              /* NOTE Ugly hack. See p_thread. */
+              thread->ci->u.c.k = (lua_KFunction)lua_tocfunction(info->L, -1);
+            }
+            else {
+              eris_error(info, ERIS_ERR_THREADCTX);
+              return; /* not reached */
+            }
+            lua_pop(info->L, 1);                                    /* ... thread */
           }
-          else {
-            eris_error(info, ERIS_ERR_THREADCTX);
-            return; /* not reached */
-          }
-          lua_pop(info->L, 1);                                    /* ... thread */
-        }
-        else {
-          thread->ci->u.c.ctx = 0;
-          thread->ci->u.c.k = NULL;
         }
       }
       LOCK(thread);
