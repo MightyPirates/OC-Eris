@@ -107,7 +107,7 @@ static const lua_Unsigned kMaxComplexity = 10000;
  * patched Lua version to be able to persist some of the library functions,
  * anyway: it needs to put the continuation C functions in the perms table. */
 /* ldebug.h */
-#define eris_ci_func(ci)		(clLvalue((ci)->func))
+#define eris_ci_func(ci)		(clLvalue(s2v((ci)->func)))
 /* ldo.h */
 #define eris_savestack savestack
 #define eris_restorestack restorestack
@@ -120,7 +120,8 @@ static const lua_Unsigned kMaxComplexity = 10000;
 /* lmem.h */
 #define eris_reallocvector luaM_reallocvector
 /* lobject.h */
-#define eris_ttnov ttnov
+#define eris_ttype ttype
+#define eris_ttypetag ttypetag
 #define eris_clLvalue clLvalue
 #define eris_setnilvalue setnilvalue
 #define eris_setclLvalue setclLvalue
@@ -131,8 +132,7 @@ static const lua_Unsigned kMaxComplexity = 10000;
 #define eris_gch gch
 #define eris_gco2uv gco2uv
 #define eris_obj2gco obj2gco
-#define eris_extendCI luaE_extendCI
-/* lstring. h */
+/* lstring.h */
 #define eris_newlstr luaS_newlstr
 /* lzio.h */
 #define eris_initbuffer luaZ_initbuffer
@@ -174,6 +174,26 @@ extern void eris_permstrlib(lua_State *L, int forUnpersist);
 #define populateperms(L, forUnpersist) ((void)0)
 
 #endif
+
+// We need our own version of this to circumvent Lua's overflow prevention.
+// TODO: Do we, though?
+
+CallInfo *eris_extendCI (lua_State *L) {
+  CallInfo *ci;
+  lua_assert(L->ci->next == NULL);
+  int ncalls = getCcalls(L);
+  L->nCcalls--;
+  if (ncalls <= CSTACKERRMARK)
+    luaD_throw(L, LUA_ERRERR);
+  ci = luaM_new(L, CallInfo);
+  lua_assert(L->ci->next == NULL);
+  L->ci->next = ci;
+  ci->previous = L->ci;
+  ci->next = NULL;
+  ci->u.l.trap = 0;
+  L->nci++;
+  return ci;
+}
 
 /*
 ** ============================================================================
@@ -222,15 +242,11 @@ extern void eris_permstrlib(lua_State *L, int forUnpersist);
 ** ============================================================================
 */
 
-/* The upvalue tag type was removed in Lua 5.3, but we still need it for
- * special handling of upvalues, so we redeclare it for internal use. */
-#define LUA_TUPVAL (LUA_TOTALTAGS + 1)
-
 /* The "type" we write when we persist a value via a replacement from the
  * permanents table. This is just an arbitrary number, but it must we lower
  * than the reference offset (below) and outside the range Lua uses for its
  * types (> LUA_TOTALTAGS). */
-#define ERIS_PERMANENT (LUA_TOTALTAGS + 2)
+#define ERIS_PERMANENT (LUA_TOTALTAGS + 1)
 
 /* This is essentially the first reference we'll use. We do this to save one
  * field in our persisted data: if the value is smaller than this, the object
@@ -245,7 +261,7 @@ extern void eris_permstrlib(lua_State *L, int forUnpersist);
 
 /* Used for internal consistency checks, for debugging. These are true asserts
  * in the sense that they should never fire, even for bad inputs. */
-#if 0
+#if 1
 #define eris_assert(c) assert(c)
 #define eris_ifassert(e) e
 #else
@@ -537,6 +553,11 @@ write_uint64_t(Info *info, uint64_t value) {
 }
 
 static void
+write_int8_t(Info *info, int8_t value) {
+  write_uint8_t(info, (uint8_t)value);
+}
+
+static void
 write_int16_t(Info *info, int16_t value) {
   write_uint16_t(info, (uint16_t)value);
 }
@@ -676,6 +697,11 @@ read_uint64_t(Info *info) {
          ((uint64_t)read_uint8_t(info) << 40) |
          ((uint64_t)read_uint8_t(info) << 48) |
          ((uint64_t)read_uint8_t(info) << 56);
+}
+
+static int8_t
+read_int8_t(Info *info) {
+  return (int8_t)read_uint8_t(info);
 }
 
 static int16_t
@@ -1257,7 +1283,7 @@ p_proto(Info *info) {                                            /* ... proto */
 
   /* Write line information. */
   WRITE_VALUE(p->sizelineinfo, int);
-  WRITE(p->lineinfo, p->sizelineinfo, int);
+  WRITE(p->lineinfo, p->sizelineinfo, int8_t);
 
   /* Write locals info. */
   WRITE_VALUE(p->sizelocvars, int);
@@ -1269,6 +1295,17 @@ p_proto(Info *info) {                                            /* ... proto */
     pushtstring(info->L, p->locvars[i].varname);     /* ... lcl proto varname */
     persist(info);                                   /* ... lcl proto varname */
     lua_pop(info->L, 1);                                     /* ... lcl proto */
+    poppath(info);
+  }
+  poppath(info);
+
+  /* Write abslineinfo. */
+  WRITE_VALUE(p->sizeabslineinfo, int);
+  pushpath(info, ".abslineinfo");
+  for (i = 0; i < p->sizeabslineinfo; ++i) {
+    pushpath(info, "[%d]", i);
+    WRITE_VALUE(p->abslineinfo[i].pc, int);
+    WRITE_VALUE(p->abslineinfo[i].line, int);
     poppath(info);
   }
   poppath(info);
@@ -1306,12 +1343,12 @@ u_proto(Info *info) {                                            /* ... proto */
 
   /* Read byte code. */
   p->sizecode = READ_VALUE(int);
-  eris_reallocvector(info->L, p->code, 0, p->sizecode, Instruction);
+  p->code = eris_reallocvector(info->L, p->code, 0, p->sizecode, Instruction);
   READ(p->code, p->sizecode, Instruction);
 
   /* Read constants. */
   p->sizek = READ_VALUE(int);
-  eris_reallocvector(info->L, p->k, 0, p->sizek, TValue);
+  p->k = eris_reallocvector(info->L, p->k, 0, p->sizek, TValue);
   /* Set all values to nil to avoid confusing the GC. */
   for (i = 0, n = p->sizek; i < n; ++i) {
     eris_setnilvalue(&p->k[i]);
@@ -1328,7 +1365,7 @@ u_proto(Info *info) {                                            /* ... proto */
 
   /* Read child protos. */
   p->sizep = READ_VALUE(int);
-  eris_reallocvector(info->L, p->p, 0, p->sizep, Proto*);
+  p->p = eris_reallocvector(info->L, p->p, 0, p->sizep, Proto*);
   /* Null all entries to avoid confusing the GC. */
   memset(p->p, 0, p->sizep * sizeof(Proto*));
   pushpath(info, ".protos");
@@ -1350,7 +1387,7 @@ u_proto(Info *info) {                                            /* ... proto */
 
   /* Read upvalues. */
   p->sizeupvalues = READ_VALUE(int);
-  eris_reallocvector(info->L, p->upvalues, 0, p->sizeupvalues, Upvaldesc);
+  p->upvalues = eris_reallocvector(info->L, p->upvalues, 0, p->sizeupvalues, Upvaldesc);
   for (i = 0, n = p->sizeupvalues; i < n; ++i) {
     p->upvalues[i].name = NULL;
     p->upvalues[i].instack = READ_VALUE(uint8_t);
@@ -1371,12 +1408,12 @@ u_proto(Info *info) {                                            /* ... proto */
 
   /* Read line information. */
   p->sizelineinfo = READ_VALUE(int);
-  eris_reallocvector(info->L, p->lineinfo, 0, p->sizelineinfo, int);
-  READ(p->lineinfo, p->sizelineinfo, int);
+  p->lineinfo = eris_reallocvector(info->L, p->lineinfo, 0, p->sizelineinfo, int8_t);
+  READ(p->lineinfo, p->sizelineinfo, int8_t);
 
   /* Read locals info. */
   p->sizelocvars = READ_VALUE(int);
-  eris_reallocvector(info->L, p->locvars, 0, p->sizelocvars, LocVar);
+  p->locvars = eris_reallocvector(info->L, p->locvars, 0, p->sizelocvars, LocVar);
   /* Null the variable names to avoid confusing the GC. */
   for (i = 0, n = p->sizelocvars; i < n; ++i) {
     p->locvars[i].varname = NULL;
@@ -1389,6 +1426,18 @@ u_proto(Info *info) {                                            /* ... proto */
     unpersist(info);                                         /* ... proto str */
     copytstring(info->L, &p->locvars[i].varname);
     lua_pop(info->L, 1);                                         /* ... proto */
+    poppath(info);
+  }
+  poppath(info);
+
+  /* Read abslineinfo. */
+  p->sizeabslineinfo = READ_VALUE(int);
+  p->abslineinfo = eris_reallocvector(info->L, p->abslineinfo, 0, p->sizeabslineinfo, AbsLineInfo);
+  pushpath(info, ".abslineinfo");
+  for (i = 0; i < p->sizeabslineinfo; ++i) {
+    pushpath(info, "[%d]", i);
+    p->abslineinfo[i].pc = READ_VALUE(int);
+    p->abslineinfo[i].line = READ_VALUE(int);
     poppath(info);
   }
   poppath(info);
@@ -1446,13 +1495,13 @@ static void
 p_closure(Info *info) {                              /* perms reftbl ... func */
   int nup;
   eris_checkstack(info->L, 2);
-  switch (ttype(info->L->top - 1)) {
+  switch (eris_ttypetag(s2v(info->L->top - 1))) {
     case LUA_TLCF: /* light C function */
       /* We cannot persist these, they have to be handled via the permtable. */
       eris_error(info, ERIS_ERR_CFUNC, lua_tocfunction(info->L, -1));
       return; /* not reached */
     case LUA_TCCL: /* C closure */ {                  /* perms reftbl ... ccl */
-      CClosure *cl = clCvalue(info->L->top - 1);
+      CClosure *cl = clCvalue(s2v(info->L->top - 1));
       /* Mark it as a C closure. */
       WRITE_VALUE(true, uint8_t);
       /* Write the upvalue count first, since we have to know it when creating
@@ -1481,7 +1530,7 @@ p_closure(Info *info) {                              /* perms reftbl ... func */
       break;
     }
     case LUA_TLCL: /* Lua function */ {               /* perms reftbl ... lcl */
-      LClosure *cl = eris_clLvalue(info->L->top - 1);
+      LClosure *cl = eris_clLvalue(s2v(info->L->top - 1));
       /* Mark it as a Lua closure. */
       WRITE_VALUE(false, uint8_t);
       /* Write the upvalue count first, since we have to know it when creating
@@ -1683,8 +1732,9 @@ u_closure(Info *info) {                                                /* ... */
     poppath(info);
 
     /* save it in cache for reuse, see lvm.c:416 */
-    if (!isblack(p))
-      p->cache = cl;
+    // TODO: Is this necessary in Lua 5.4?
+    // if (!isblack(p))
+    //   p->cache = cl;
   }
 
   eris_assert(lua_type(info->L, -1) == LUA_TFUNCTION);
@@ -1734,7 +1784,8 @@ p_thread(Info *info) {                                          /* ... thread */
   poppath(info);
 
   /* If the thread isn't running this must be the default value, which is 1. */
-  eris_assert(thread->nny == 1);
+  // TODO: Update for Lua 5.4
+  // eris_assert(thread->nny == 1);
 
   /* Error jump info should only be set while thread is running. */
   eris_assert(thread->errorJmp == NULL);
@@ -1760,7 +1811,7 @@ p_thread(Info *info) {                                          /* ... thread */
   }
 
   /* Write call information (stack frames). In 5.2 CallInfo is stored in a
-   * linked list that originates in thead.base_ci. Upon initialization the
+   * linked list that originates in thread.base_ci. Upon initialization the
    * thread.ci is set to thread.base_ci. During thread calls this is extended
    * and always represents the tail of the callstack, though not necessarily of
    * the linked list (which can be longer if the callstack was deeper earlier,
@@ -1774,46 +1825,42 @@ p_thread(Info *info) {                                          /* ... thread */
     WRITE_VALUE(eris_savestackidx(thread, ci->top), size_t);
     WRITE_VALUE(ci->nresults, int16_t);
     WRITE_VALUE(ci->callstatus, uint8_t);
-    if (ci->callstatus) {
-      /* CallInfo.extra is used in two contexts: if L->status == LUA_YIELD and
-       * CallInfo is the one stored as L->ci, in which case ci->extra refers to
-       * the original value of L->ci->func, and when we have a yieldable pcall
-       * (ci->callstatus & CIST_YPCALL) where ci->extra holds the stack level
-       * of the function being called (see lua_pcallk). We save the ci->extra
-       * for L->ci after the loop, because we won't know which one it is when
-       * unpersisting. */
-      if (ci->callstatus & CIST_YPCALL) {
-        WRITE_VALUE(eris_savestackidx(thread,
-          eris_restorestack(thread, ci->extra)), size_t);
-      }
 
-      eris_assert(eris_isLua(ci) || (ci->callstatus & CIST_TAIL) == 0);
-      if (ci->callstatus & CIST_HOOKYIELD) {
-        eris_error(info, ERIS_ERR_HOOK);
-      }
+    if (ci->callstatus & CIST_YPCALL) {
+      WRITE_VALUE(eris_savestackidx(thread,
+        eris_restorestack(thread, ci->u2.funcidx)), int);
+    } else if (ci->callstatus & CIST_TRAN) {
+      WRITE_VALUE(ci->u2.transferinfo.ftransfer, uint16_t);
+      WRITE_VALUE(ci->u2.transferinfo.ntransfer, uint16_t);
+    }
 
-      if (eris_isLua(ci)) {
-        const LClosure *lcl = eris_ci_func(ci);
-        WRITE_VALUE(eris_savestackidx(thread, ci->u.l.base), size_t);
-        WRITE_VALUE(ci->u.l.savedpc - lcl->p->code, size_t);
+    eris_assert(eris_isLua(ci) || (ci->callstatus & CIST_TAIL) == 0);
+    if (ci->callstatus & CIST_HOOKYIELD) {
+      eris_error(info, ERIS_ERR_HOOK);
+    }
+
+    if (eris_isLua(ci)) {
+      const LClosure *lcl = eris_ci_func(ci);
+      WRITE_VALUE(ci->u.l.savedpc - lcl->p->code, size_t);
+      WRITE_VALUE(ci->u.l.trap, uint8_t);
+      WRITE_VALUE(ci->u.l.nextraargs, int);
+    }
+    else {
+      /* These are only used while a thread is being executed:
+      WRITE_VALUE(ci->u.c.old_errfunc, ptrdiff_t); */
+      if (thread->status == LUA_YIELD && ci->u.c.k) {
+        WRITE_VALUE(true, uint8_t);
+        WRITE_VALUE(ci->u.c.ctx, int);
+        /* NOTE Ugly hack. We have to push the continuation function as a C
+          * function to properly track it in our ref table. It's never called,
+          * so we can get away with this. */
+        lua_pushcfunction(info->L, (lua_CFunction)(void (*) (void))ci->u.c.k);
+                                                            /* ... thread func */
+        persist(info);                                 /* ... thread func/nil */
+        lua_pop(info->L, 1);                                    /* ... thread */
       }
       else {
-        /* These are only used while a thread is being executed:
-        WRITE_VALUE(ci->u.c.old_errfunc, ptrdiff_t); */
-        if (thread->status == LUA_YIELD && ci->u.c.k) {
-          WRITE_VALUE(true, uint8_t);
-          WRITE_VALUE(ci->u.c.ctx, int);
-          /* NOTE Ugly hack. We have to push the continuation function as a C
-           * function to properly track it in our ref table. It's never called,
-           * so we can get away with this. */
-          lua_pushcfunction(info->L, (lua_CFunction)(void (*) (void))ci->u.c.k);
-                                                             /* ... thread func */
-          persist(info);                                 /* ... thread func/nil */
-          lua_pop(info->L, 1);                                    /* ... thread */
-        }
-        else {
-          WRITE_VALUE(false, uint8_t);
-        }
+        WRITE_VALUE(false, uint8_t);
       }
     }
 
@@ -1822,10 +1869,9 @@ p_thread(Info *info) {                                          /* ... thread */
 
     poppath(info);
   }
-  /** See comment on ci->extra in loop. */
+
   if (thread->status == LUA_YIELD) {
-    WRITE_VALUE(eris_savestackidx(thread,
-        eris_restorestack(thread, thread->ci->extra)), size_t);
+    WRITE_VALUE(thread->ci->u2.nyield, int);
   }
   poppath(info);
 
@@ -1837,7 +1883,8 @@ p_thread(Info *info) {                                          /* ... thread */
        uv = uv->u.open.next)
   {
     pushpath(info, "[%d]", level++);
-    WRITE_VALUE(eris_savestackidx(thread, uv->v) + 1, size_t);
+    // TODO Lua 5.4 is the StkId cast correct?
+    WRITE_VALUE(eris_savestackidx(thread, ((StkId) uv->v)) + 1, size_t);
     eris_setobj(info->L, info->L->top - 1, uv->v);          /* ... thread obj */
     lua_pushlightuserdata(info->L, uv);                  /* ... thread obj id */
     persist_keyed(info, LUA_TUPVAL);                        /* ... thread obj */
@@ -1878,7 +1925,7 @@ u_thread(Info *info) {                                                 /* ... */
   registerobject(info);
 
   /* Unpersist the stack. Read size first and adjust accordingly. */
-  eris_reallocstack(thread, READ_VALUE(int));
+  eris_reallocstack(thread, READ_VALUE(int), true);
   stack = thread->stack; /* After the realloc in case the address changes. */
   thread->top = thread->stack + READ_VALUE(size_t);
   validate(thread->top, thread->stack_last);
@@ -1904,7 +1951,8 @@ u_thread(Info *info) {                                                 /* ... */
   UNLOCK(thread);
 
   /* As in p_thread, just to make sure. */
-  eris_assert(thread->nny == 1);
+  // TODO: Update for Lua 5.4
+  //eris_assert(thread->nny == 1);
   eris_assert(thread->errorJmp == NULL);
   eris_assert(thread->hook == NULL);
 
@@ -1918,7 +1966,7 @@ u_thread(Info *info) {                                                 /* ... */
   if (thread->errfunc) {
     o = eris_restorestack(thread, thread->errfunc);
     validate(o, thread->top);
-    if (eris_ttnov(o) != LUA_TFUNCTION) {
+    if (eris_ttype(s2v(o)) != LUA_TFUNCTION) {
       eris_error(info, ERIS_ERR_THREADERRF);
     }
   }
@@ -1948,65 +1996,63 @@ u_thread(Info *info) {                                                 /* ... */
     validate(thread->ci->top, thread->stack_last);
     thread->ci->nresults = READ_VALUE(int16_t);
     thread->ci->callstatus = READ_VALUE(uint8_t);
-    if (thread->ci->callstatus) {
-      /** See comment in p_thread. */
-      if (thread->ci->callstatus & CIST_YPCALL) {
-        thread->ci->extra = eris_savestack(thread,
-          eris_restorestackidx(thread, READ_VALUE(size_t)));
-        o = eris_restorestack(thread, thread->ci->extra);
-        validate(o, thread->top);
-        if (eris_ttnov(o) != LUA_TFUNCTION) {
-          eris_error(info, ERIS_ERR_THREADCI);
-        }
+
+    /** See comment in p_thread. */
+    if (thread->ci->callstatus & CIST_YPCALL) {
+      thread->ci->u2.funcidx = eris_savestack(thread,
+        eris_restorestackidx(thread, READ_VALUE(int)));
+      o = eris_restorestack(thread, thread->ci->u2.funcidx);
+      validate(o, thread->top);
+      if (eris_ttype(s2v(o)) != LUA_TFUNCTION) {
+        eris_error(info, ERIS_ERR_THREADCI);
       }
+    } else if (thread->ci->callstatus & CIST_TRAN) {
+      thread->ci->u2.transferinfo.ftransfer = READ_VALUE(uint16_t);
+      thread->ci->u2.transferinfo.ntransfer = READ_VALUE(uint16_t);
+    }
 
-      if (eris_isLua(thread->ci)) {
-        LClosure *lcl = eris_ci_func(thread->ci);
-        thread->ci->u.l.base = eris_restorestackidx(thread, READ_VALUE(size_t));
-        validate(thread->ci->u.l.base, thread->top);
-        thread->ci->u.l.savedpc = lcl->p->code + READ_VALUE(size_t);
-        if (thread->ci->u.l.savedpc < lcl->p->code ||
-            thread->ci->u.l.savedpc > lcl->p->code + lcl->p->sizecode)
-        {
-          thread->ci->u.l.savedpc = lcl->p->code; /* Just to be safe. */
-          eris_error(info, ERIS_ERR_THREADPC);
-        }
+    if (eris_isLua(thread->ci)) {
+      LClosure *lcl = eris_ci_func(thread->ci);
+      thread->ci->u.l.savedpc = lcl->p->code + READ_VALUE(size_t);
+      if (thread->ci->u.l.savedpc < lcl->p->code ||
+          thread->ci->u.l.savedpc > lcl->p->code + lcl->p->sizecode)
+      {
+        thread->ci->u.l.savedpc = lcl->p->code; /* Just to be safe. */
+        eris_error(info, ERIS_ERR_THREADPC);
       }
-      else {
-        /* These are only used while a thread is being executed:
-        thread->ci->u.c.old_errfunc = READ_VALUE(ptrdiff_t); */
-        thread->ci->u.c.old_errfunc = 0;
+      thread->ci->u.l.trap = READ_VALUE(uint8_t);
+      thread->ci->u.l.nextraargs = READ_VALUE(int);
+    }
+    else {
+      /* These are only used while a thread is being executed:
+      thread->ci->u.c.old_errfunc = READ_VALUE(ptrdiff_t); */
+      thread->ci->u.c.old_errfunc = 0;
 
-        thread->ci->u.c.ctx = 0;
-        thread->ci->u.c.k = NULL;
+      thread->ci->u.c.ctx = 0;
+      thread->ci->u.c.k = NULL;
 
-        if (READ_VALUE(uint8_t)) {
-          if (thread->status == LUA_YIELD) {
-            thread->ci->u.c.ctx = READ_VALUE(int);
-            LOCK(thread);
-            unpersist(info);                                  /* ... thread func? */
-            UNLOCK(thread);
-            if (lua_iscfunction(info->L, -1)) {                /* ... thread func */
-              /* NOTE Ugly hack. See p_thread. */
-              thread->ci->u.c.k =
-                (lua_KFunction)(void (*) (void))lua_tocfunction(info->L, -1);
-            }
-            else {
-              eris_error(info, ERIS_ERR_THREADCTX);
-              return; /* not reached */
-            }
-            lua_pop(info->L, 1);                                    /* ... thread */
+      if (READ_VALUE(uint8_t)) {
+        if (thread->status == LUA_YIELD) {
+          thread->ci->u.c.ctx = READ_VALUE(int);
+          LOCK(thread);
+          unpersist(info);                                  /* ... thread func? */
+          UNLOCK(thread);
+          if (lua_iscfunction(info->L, -1)) {                /* ... thread func */
+            /* NOTE Ugly hack. See p_thread. */
+            thread->ci->u.c.k =
+              (lua_KFunction)(void (*) (void))lua_tocfunction(info->L, -1);
           }
+          else {
+            eris_error(info, ERIS_ERR_THREADCTX);
+            return; /* not reached */
+          }
+          lua_pop(info->L, 1);                                    /* ... thread */
         }
       }
+      
       LOCK(thread);
       poppath(info);
       UNLOCK(thread);
-    }
-    else {
-      thread->ci->u.c.k = NULL;
-      thread->ci->u.c.old_errfunc = 0;
-      thread->ci->u.c.ctx = 0;
     }
 
     /* Read in value for check for next iteration. */
@@ -2018,13 +2064,7 @@ u_thread(Info *info) {                                                 /* ... */
     }
   }
   if (thread->status == LUA_YIELD) {
-    thread->ci->extra = eris_savestack(thread,
-      eris_restorestackidx(thread, READ_VALUE(size_t)));
-    o = eris_restorestack(thread, thread->ci->extra);
-    validate(o, thread->top);
-    if (eris_ttnov(o) != LUA_TFUNCTION) {
-      eris_error(info, ERIS_ERR_THREADCI);
-    }
+    thread->ci->u2.nyield = READ_VALUE(int);
   }
   LOCK(thread);
   poppath(info);
@@ -2079,14 +2119,14 @@ u_thread(Info *info) {                                                 /* ... */
         LClosure *cl;
         int nup;
         lua_rawgeti(info->L, -1, i);                    /* ... thread tbl lcl */
-        cl = eris_clLvalue(info->L->top - 1);
+        cl = eris_clLvalue(s2v(info->L->top - 1));
         lua_pop(info->L, 1);                                /* ... thread tbl */
         lua_rawgeti(info->L, -1, i + 1);                /* ... thread tbl nup */
         nup = lua_tointeger(info->L, -1);
         lua_pop(info->L, 1);                                /* ... thread tbl */
         /* Open the upvalue by pointing to the stack and register in GC. */
         cl->upvals[nup - 1] = nuv;
-        cl->upvals[nup - 1]->refcount++;
+        luaC_objbarrier(info->L, cl, cl->upvals[nup - 1]);
       }
     }
     else {                                              /* ... thread tbl nil */
