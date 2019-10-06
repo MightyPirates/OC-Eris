@@ -1,5 +1,5 @@
 /*
-Eris - Heavy-duty persistence for Lua 5.3.4 - Based on Pluto
+Eris - Heavy-duty persistence for Lua 5.3.5 - Based on Pluto
 Copyright (c) 2013-2015 by Florian Nuecke.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -1336,7 +1336,7 @@ u_proto(Info *info) {                                            /* ... proto */
     Proto *cp;
     pushpath(info, "[%d]", i);
     p->p[i] = eris_newproto(info->L);
-    lua_pushlightuserdata(info->L, (void*)p->p[i]);              /* ... proto nproto */
+    lua_pushlightuserdata(info->L, (void*)p->p[i]);       /* ... proto nproto */
     unpersist(info);                        /* ... proto nproto nproto/oproto */
     cp = (Proto*)lua_touserdata(info->L, -1);
     if (cp != p->p[i]) {                           /* ... proto nproto oproto */
@@ -1359,6 +1359,8 @@ u_proto(Info *info) {                                            /* ... proto */
 
   /* Read debug information if any is present. */
   if (!READ_VALUE(uint8_t)) {
+    /* Match stack behaviour of alternative branch. */
+    lua_pushvalue(info->L, -1);                            /* ... proto proto */
     return;
   }
 
@@ -1587,14 +1589,14 @@ u_closure(Info *info) {                                                /* ... */
     pushpath(info, ".proto");
     cl->p = eris_newproto(info->L);
     /* Push the proto into which to unpersist as a parameter to u_proto. */
-    lua_pushlightuserdata(info->L, cl->p);                /* ... lcl nproto */
+    lua_pushlightuserdata(info->L, cl->p);                  /* ... lcl nproto */
     unpersist(info);                          /* ... lcl nproto nproto/oproto */
     eris_assert(lua_type(info->L, -1) == LUA_TLIGHTUSERDATA);
     /* The proto we have now may differ, if we already unpersisted it before.
      * In that case we now have a reference to the originally unpersisted
      * proto so we'll use that. */
     p = (Proto*)lua_touserdata(info->L, -1);
-    if (p != cl->p) {                              /* ... lcl nproto oproto */
+    if (p != cl->p) {                                /* ... lcl nproto oproto */
       /* Just overwrite the old one, GC will clean this up. */
       cl->p = p;
     }
@@ -1804,7 +1806,7 @@ p_thread(Info *info) {                                          /* ... thread */
           /* NOTE Ugly hack. We have to push the continuation function as a C
            * function to properly track it in our ref table. It's never called,
            * so we can get away with this. */
-          lua_pushcfunction(info->L, (lua_CFunction)ci->u.c.k);
+          lua_pushcfunction(info->L, (lua_CFunction)(void (*) (void))ci->u.c.k);
                                                              /* ... thread func */
           persist(info);                                 /* ... thread func/nil */
           lua_pop(info->L, 1);                                    /* ... thread */
@@ -1986,7 +1988,8 @@ u_thread(Info *info) {                                                 /* ... */
             UNLOCK(thread);
             if (lua_iscfunction(info->L, -1)) {                /* ... thread func */
               /* NOTE Ugly hack. See p_thread. */
-              thread->ci->u.c.k = (lua_KFunction)lua_tocfunction(info->L, -1);
+              thread->ci->u.c.k =
+                (lua_KFunction)(void (*) (void))lua_tocfunction(info->L, -1);
             }
             else {
               eris_error(info, ERIS_ERR_THREADCTX);
