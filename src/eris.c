@@ -21,6 +21,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
+#include "lprefix.h"
+
 /* Standard library headers. */
 #include <assert.h>
 #include <math.h>
@@ -245,8 +247,8 @@ CallInfo *eris_extendCI (lua_State *L) {
 /* The "type" we write when we persist a value via a replacement from the
  * permanents table. This is just an arbitrary number, but it must we lower
  * than the reference offset (below) and outside the range Lua uses for its
- * types (> LUA_TOTALTAGS). */
-#define ERIS_PERMANENT (LUA_TOTALTAGS + 1)
+ * types (> LUA_TOTALTYPES). */
+#define ERIS_PERMANENT (LUA_TOTALTYPES + 1)
 
 /* This is essentially the first reference we'll use. We do this to save one
  * field in our persisted data: if the value is smaller than this, the object
@@ -1496,11 +1498,11 @@ p_closure(Info *info) {                              /* perms reftbl ... func */
   int nup;
   eris_checkstack(info->L, 2);
   switch (eris_ttypetag(s2v(info->L->top - 1))) {
-    case LUA_TLCF: /* light C function */
+    case LUA_VLCF: /* light C function */
       /* We cannot persist these, they have to be handled via the permtable. */
       eris_error(info, ERIS_ERR_CFUNC, lua_tocfunction(info->L, -1));
       return; /* not reached */
-    case LUA_TCCL: /* C closure */ {                  /* perms reftbl ... ccl */
+    case LUA_VCCL: /* C closure */ {                  /* perms reftbl ... ccl */
       CClosure *cl = clCvalue(s2v(info->L->top - 1));
       /* Mark it as a C closure. */
       WRITE_VALUE(true, uint8_t);
@@ -1529,7 +1531,7 @@ p_closure(Info *info) {                              /* perms reftbl ... func */
       poppath(info);
       break;
     }
-    case LUA_TLCL: /* Lua function */ {               /* perms reftbl ... lcl */
+    case LUA_VLCL: /* Lua function */ {               /* perms reftbl ... lcl */
       LClosure *cl = eris_clLvalue(s2v(info->L->top - 1));
       /* Mark it as a Lua closure. */
       WRITE_VALUE(false, uint8_t);

@@ -4,7 +4,7 @@
 # == CHANGE THE SETTINGS BELOW TO SUIT YOUR ENVIRONMENT =======================
 
 # Your platform. See PLATS for possible values.
-PLAT= none
+PLAT= guess
 
 # Where to install. The installation starts in the src and doc directories,
 # so take care if INSTALL_TOP is not an absolute path. See the local target.
@@ -36,7 +36,7 @@ RM= rm -f
 # == END OF USER SETTINGS -- NO NEED TO CHANGE ANYTHING BELOW THIS LINE =======
 
 # Convenience platforms targets.
-PLATS= aix bsd c89 freebsd generic guess linux linux-readline macosx mingw posix solaris
+PLATS= guess aix bsd c89 freebsd generic linux linux-readline macosx mingw posix solaris
 
 # What to install.
 TO_BIN= lua luac
@@ -51,11 +51,11 @@ R= $V.0
 # Targets start here.
 all:	$(PLAT)
 
-$(PLATS) clean:
+$(PLATS) help clean:
 	cd src && $(MAKE) $@
 
 test:	dummy
-	src/lua -v
+	cd src && $(MAKE) $@
 	"test/persist" test/persist.lua test.eris && "test/unpersist" test/unpersist.lua test.eris
 
 install: dummy
@@ -74,15 +74,10 @@ uninstall:
 local:
 	$(MAKE) install INSTALL_TOP=../install
 
-none:
-	@echo "Please do 'make PLATFORM' where PLATFORM is one of these:"
-	@echo "   $(PLATS)"
-	@echo "See doc/readme.html for complete instructions."
-
-# make may get confused with test/ and install/
+# make may get confused with install/ if it does not support .PHONY.
 dummy:
 
-# echo config parameters
+# Echo config parameters.
 echo:
 	@cd src && $(MAKE) -s echo
 	@echo "PLAT= $(PLAT)"
@@ -102,14 +97,14 @@ echo:
 	@echo "INSTALL_EXEC= $(INSTALL_EXEC)"
 	@echo "INSTALL_DATA= $(INSTALL_DATA)"
 
-# echo pkg-config data
+# Echo pkg-config data.
 pc:
 	@echo "version=$R"
 	@echo "prefix=$(INSTALL_TOP)"
 	@echo "libdir=$(INSTALL_LIB)"
 	@echo "includedir=$(INSTALL_INC)"
 
-# list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc
+# Targets that do not create files (not all makes understand .PHONY).
+.PHONY: all $(PLATS) help test clean install uninstall local dummy echo pc
 
 # (end of Makefile)
