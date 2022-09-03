@@ -26,7 +26,7 @@ MYLIBS=
 MYOBJS=eris.o
 
 # Special flags for compiler modules; -Os reduces code size.
-CMCFLAGS= -Os
+CMCFLAGS= 
 
 # == END OF USER SETTINGS -- NO NEED TO CHANGE ANYTHING BELOW THIS LINE =======
 
@@ -72,17 +72,8 @@ $(LUA_T): $(LUA_O) $(LUA_A)
 $(LUAC_T): $(LUAC_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
 
-$(TESTP_T): $(TESTP_O) $(LUA_A)
-	$(CC) -o $@ $(LDFLAGS) $(TESTP_O) $(LUA_A) $(LIBS)
-
-$(TESTUP_T): $(TESTUP_O) $(LUA_A)
-	$(CC) -o $@ $(LDFLAGS) $(TESTUP_O) $(LUA_A) $(LIBS)
-
-$(TESTP_O): lua.h lualib.h lauxlib.h
-	$(CC) -c -o $@ ../test/persist.c -I../src
-
-$(TESTUP_O): ../test/unpersist.c lua.h lualib.h lauxlib.h
-	 $(CC) -c -o $@ ../test/unpersist.c -I../src
+test:
+	./$(LUA_T) -v
 
 clean:
 	$(RM) $(ALL_T) $(ALL_O)
@@ -94,7 +85,7 @@ echo:
 	@echo "PLAT= $(PLAT)"
 	@echo "CC= $(CC)"
 	@echo "CFLAGS= $(CFLAGS)"
-	@echo "LDFLAGS= $(SYSLDFLAGS)"
+	@echo "LDFLAGS= $(LDFLAGS)"
 	@echo "LIBS= $(LIBS)"
 	@echo "AR= $(AR)"
 	@echo "RANLIB= $(RANLIB)"
@@ -123,6 +114,8 @@ c89:
 	$(MAKE) $(ALL) SYSCFLAGS="-DLUA_USE_C89" CC="gcc -std=c89"
 	@echo ''
 	@echo '*** C89 does not guarantee 64-bit integers for Lua.'
+	@echo '*** Make sure to compile all external Lua libraries'
+	@echo '*** with LUA_USE_C89 to ensure consistency'
 	@echo ''
 
 FreeBSD NetBSD OpenBSD freebsd:
