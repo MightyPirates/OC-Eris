@@ -178,23 +178,9 @@ extern void eris_permstrlib(lua_State *L, int forUnpersist);
 #endif
 
 // We need our own version of this to circumvent Lua's overflow prevention.
-// TODO: Do we, though?
-
 CallInfo *eris_extendCI (lua_State *L) {
-  CallInfo *ci;
-  lua_assert(L->ci->next == NULL);
-  int ncalls = getCcalls(L);
-  L->nCcalls--;
-  if (ncalls <= CSTACKERRMARK)
-    luaD_throw(L, LUA_ERRERR);
-  ci = luaM_new(L, CallInfo);
-  lua_assert(L->ci->next == NULL);
-  L->ci->next = ci;
-  ci->previous = L->ci;
-  ci->next = NULL;
-  ci->u.l.trap = 0;
-  L->nci++;
-  return ci;
+  // TODO: Do we, though?
+  return luaE_extendCI(L);
 }
 
 /*
@@ -1761,7 +1747,7 @@ p_thread(Info *info) {                                          /* ... thread */
   }
 
   /* Persist the stack. Save the total size and used space first. */
-  WRITE_VALUE(thread->stacksize, int);
+  WRITE_VALUE(stacksize(thread), int);
   WRITE_VALUE(total, size_t);
 
   /* The Lua stack looks like this:
