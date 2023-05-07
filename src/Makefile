@@ -72,6 +72,12 @@ $(LUA_T): $(LUA_O) $(LUA_A)
 $(LUAC_T): $(LUAC_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
 
+$(TESTP_T): $(LUA_A) $(TESTP_O)
+	$(CC) -o $@ $(LDFLAGS) $(TESTP_O) $(LUA_A) $(LIBS)
+
+$(TESTUP_T): $(LUA_A) $(TESTUP_O)
+	$(CC) -o $@ $(LDFLAGS) $(TESTUP_O) $(LUA_A) $(LIBS)
+
 test:
 	./$(LUA_T) -v
 

@@ -109,7 +109,7 @@ static const lua_Unsigned kMaxComplexity = 10000;
  * patched Lua version to be able to persist some of the library functions,
  * anyway: it needs to put the continuation C functions in the perms table. */
 /* ldebug.h */
-#define eris_ci_func(ci)		(clLvalue(s2v((ci)->func)))
+#define eris_ci_func(ci)		(clLvalue(s2v((ci)->func.p)))
 /* ldo.h */
 #define eris_savestack savestack
 #define eris_restorestack restorestack
@@ -147,8 +147,8 @@ static const lua_Unsigned kMaxComplexity = 10000;
 /* These are required for cross-platform support, since the size of TValue may
  * differ, so the byte offset used by savestack/restorestack in Lua it is not a
  * valid measure. */
-#define eris_savestackidx(L, p) ((p) - (L)->stack)
-#define eris_restorestackidx(L, n) ((L)->stack + (n))
+#define eris_savestackidx(L, pt) ((pt) - (L)->stack.p)
+#define eris_restorestackidx(L, n) ((L)->stack.p + (n))
 
 /* Enabled if we have a patched version of Lua (for accessing internals). */
 #if 1
@@ -347,7 +347,7 @@ registerobject(Info *info) {                          /* perms reftbl ... obj */
 static void
 pushtstring(lua_State* L, TString *ts) {                               /* ... */
   if (ts) {
-    eris_setsvalue2n(L, L->top, ts);
+    eris_setsvalue2n(L, L->top.p, ts);
     api_incr_top(L);                                              /* ... str */
   }
   else {
@@ -1231,7 +1231,7 @@ p_proto(Info *info) {                                            /* ... proto */
   pushpath(info, ".constants");
   for (i = 0; i < p->sizek; ++i) {
     pushpath(info, "[%d]", i);
-    eris_setobj(info->L, info->L->top++, &p->k[i]);      /* ... lcl proto obj */
+    eris_setobj(info->L, info->L->top.p++, &p->k[i]);      /* ... lcl proto obj */
     persist(info);                                       /* ... lcl proto obj */
     lua_pop(info->L, 1);                                     /* ... lcl proto */
     poppath(info);
@@ -1345,7 +1345,7 @@ u_proto(Info *info) {                                            /* ... proto */
   for (i = 0, n = p->sizek; i < n; ++i) {
     pushpath(info, "[%d]", i);
     unpersist(info);                                         /* ... proto obj */
-    eris_setobj(info->L, &p->k[i], info->L->top - 1);
+    eris_setobj(info->L, &p->k[i], info->L->top.p - 1);
     lua_pop(info->L, 1);                                         /* ... proto */
     poppath(info);
   }
@@ -1483,13 +1483,13 @@ static void
 p_closure(Info *info) {                              /* perms reftbl ... func */
   int nup;
   eris_checkstack(info->L, 2);
-  switch (eris_ttypetag(s2v(info->L->top - 1))) {
+  switch (eris_ttypetag(s2v(info->L->top.p - 1))) {
     case LUA_VLCF: /* light C function */
       /* We cannot persist these, they have to be handled via the permtable. */
       eris_error(info, ERIS_ERR_CFUNC, lua_tocfunction(info->L, -1));
       return; /* not reached */
     case LUA_VCCL: /* C closure */ {                  /* perms reftbl ... ccl */
-      CClosure *cl = clCvalue(s2v(info->L->top - 1));
+      CClosure *cl = clCvalue(s2v(info->L->top.p - 1));
       /* Mark it as a C closure. */
       WRITE_VALUE(true, uint8_t);
       /* Write the upvalue count first, since we have to know it when creating
@@ -1518,7 +1518,7 @@ p_closure(Info *info) {                              /* perms reftbl ... func */
       break;
     }
     case LUA_VLCL: /* Lua function */ {               /* perms reftbl ... lcl */
-      LClosure *cl = eris_clLvalue(s2v(info->L->top - 1));
+      LClosure *cl = eris_clLvalue(s2v(info->L->top.p - 1));
       /* Mark it as a Lua closure. */
       WRITE_VALUE(false, uint8_t);
       /* Write the upvalue count first, since we have to know it when creating
@@ -1613,7 +1613,7 @@ u_closure(Info *info) {                                                /* ... */
 
     /* Create closure and anchor it on the stack (avoid collection via GC). */
     cl = eris_newLclosure(info->L, nups);
-    eris_setclLvalue(info->L, info->L->top, cl);                   /* ... lcl */
+    eris_setclLvalue(info->L, info->L->top.p, cl);                   /* ... lcl */
     api_incr_top(info->L);
 
     /* Preregister closure for handling of cycles (upvalues). */
@@ -1683,7 +1683,7 @@ u_closure(Info *info) {                                                /* ... */
          * even if we re-used one - if we had a cycle, it might have been
          * incorrectly initialized to nil before (or rather, not yet set). */
         lua_rawgeti(info->L, -1, UVTVAL);                  /* ... lcl tbl obj */
-        eris_setobj(info->L, &(*uv)->u.value, info->L->top - 1);
+        eris_setobj(info->L, &(*uv)->u.value, info->L->top.p - 1);
         lua_pop(info->L, 1);                                   /* ... lcl tbl */
 
         lua_pushinteger(info->L, nup);                     /* ... lcl tbl nup */
@@ -1733,7 +1733,7 @@ u_closure(Info *info) {                                                /* ... */
 static void
 p_thread(Info *info) {                                          /* ... thread */
   lua_State* thread = lua_tothread(info->L, -1);
-  size_t level = 0, total = thread->top - thread->stack;
+  size_t level = 0, total = thread->top.p - thread->stack.p;
   CallInfo *ci;
   UpVal *uv;
 
@@ -1757,13 +1757,13 @@ p_thread(Info *info) {                                          /* ... thread */
   pushpath(info, ".stack");
   lua_pushnil(info->L);                                     /* ... thread nil */
   /* Since the thread's stack may be re-allocated in the meantime, we cannot
-   * use pointer arithmetic here (i.e. o = thread->stack; ...; ++o). Instead we
+   * use pointer arithmetic here (i.e. o = thread->stack.p; ...; ++o). Instead we
    * have to keep track of our position in the stack directly (which we do for
    * the path info anyway) and compute the actual address each time.
    */
   for (; level < total; ++level) {
     pushpath(info, "[%d]", level);
-    eris_setobj(info->L, info->L->top - 1, thread->stack + level);
+    eris_setobj(info->L, info->L->top.p - 1, thread->stack.p + level);
                                                             /* ... thread obj */
     persist(info);                                          /* ... thread obj */
     poppath(info);
@@ -1809,8 +1809,8 @@ p_thread(Info *info) {                                          /* ... thread */
   eris_assert(&thread->base_ci != thread->ci->next);
   for (ci = &thread->base_ci; ci != thread->ci->next; ci = ci->next) {
     pushpath(info, "[%d]", level++);
-    WRITE_VALUE(eris_savestackidx(thread, ci->func), size_t);
-    WRITE_VALUE(eris_savestackidx(thread, ci->top), size_t);
+    WRITE_VALUE(eris_savestackidx(thread, ci->func.p), size_t);
+    WRITE_VALUE(eris_savestackidx(thread, ci->top.p), size_t);
     WRITE_VALUE(ci->nresults, int16_t);
     WRITE_VALUE(ci->callstatus, uint8_t);
 
@@ -1872,8 +1872,8 @@ p_thread(Info *info) {                                          /* ... thread */
   {
     pushpath(info, "[%d]", level++);
     // TODO Lua 5.4 is the StkId cast correct?
-    WRITE_VALUE(eris_savestackidx(thread, ((StkId) uv->v)) + 1, size_t);
-    eris_setobj(info->L, info->L->top - 1, uv->v);          /* ... thread obj */
+    WRITE_VALUE(eris_savestackidx(thread, ((StkId) uv->v.p)) + 1, size_t);
+    eris_setobj(info->L, info->L->top.p - 1, uv->v.p);          /* ... thread obj */
     lua_pushlightuserdata(info->L, uv);                  /* ... thread obj id */
     persist_keyed(info, LUA_TUPVAL);                        /* ... thread obj */
     poppath(info);
@@ -1885,8 +1885,8 @@ p_thread(Info *info) {                                          /* ... thread */
 
 /* Used in u_thread to validate read stack positions. */
 #define validate(stackpos, inclmax) \
-  if ((stackpos) < thread->stack || stackpos > (inclmax)) { \
-    (stackpos) = thread->stack; \
+  if ((stackpos) < thread->stack.p || stackpos > (inclmax)) { \
+    (stackpos) = thread->stack.p; \
     eris_error(info, ERIS_ERR_STACKBOUNDS); }
 
 /* I had so hoped to get by without any 'hacks', but I surrender. We mark the
@@ -1898,8 +1898,8 @@ p_thread(Info *info) {                                          /* ... thread */
  * inbetween requires the stack field to be valid), but I prefer to keep the
  * "invalid" blocks as small as possible to make it clearer. Also, locking and
  * unlocking are really just variable assignments, so they're really cheap. */
-#define LOCK(L) (L->stack = NULL)
-#define UNLOCK(L) (L->stack = stack)
+#define LOCK(L) (L->stack.p = NULL)
+#define UNLOCK(L) (L->stack.p = stack)
 
 static void
 u_thread(Info *info) {                                                 /* ... */
@@ -1914,21 +1914,21 @@ u_thread(Info *info) {                                                 /* ... */
 
   /* Unpersist the stack. Read size first and adjust accordingly. */
   eris_reallocstack(thread, READ_VALUE(int), true);
-  stack = thread->stack; /* After the realloc in case the address changes. */
-  thread->top = thread->stack + READ_VALUE(size_t);
-  validate(thread->top, thread->stack_last);
+  stack = thread->stack.p; /* After the realloc in case the address changes. */
+  thread->top.p = thread->stack.p + READ_VALUE(size_t);
+  validate(thread->top.p, thread->stack_last.p);
 
   /* Read the elements one by one. */
   LOCK(thread);
   pushpath(info, ".stack");
   UNLOCK(thread);
   level = 0;
-  for (o = stack; o < thread->top; ++o) {
+  for (o = stack; o < thread->top.p; ++o) {
     LOCK(thread);
     pushpath(info, "[%d]", level++);
     unpersist(info);                                        /* ... thread obj */
     UNLOCK(thread);
-    eris_setobj(thread, o, info->L->top - 1);
+    eris_setobj(thread, o, info->L->top.p - 1);
     lua_pop(info->L, 1);                                        /* ... thread */
     LOCK(thread);
     poppath(info);
@@ -1945,7 +1945,7 @@ u_thread(Info *info) {                                                 /* ... */
   eris_assert(thread->hook == NULL);
 
   /* See comment in persist. */
-  thread->oldpc = NULL;
+  thread->oldpc = 0;
 
   /* Read general information. */
   thread->status = READ_VALUE(uint8_t);
@@ -1953,7 +1953,7 @@ u_thread(Info *info) {                                                 /* ... */
     eris_restorestackidx(thread, READ_VALUE(size_t)));
   if (thread->errfunc) {
     o = eris_restorestack(thread, thread->errfunc);
-    validate(o, thread->top);
+    validate(o, thread->top.p);
     if (eris_ttype(s2v(o)) != LUA_TFUNCTION) {
       eris_error(info, ERIS_ERR_THREADERRF);
     }
@@ -1978,10 +1978,10 @@ u_thread(Info *info) {                                                 /* ... */
     LOCK(thread);
     pushpath(info, "[%d]", level++);
     UNLOCK(thread);
-    thread->ci->func = eris_restorestackidx(thread, READ_VALUE(size_t));
-    validate(thread->ci->func, thread->top - 1);
-    thread->ci->top = eris_restorestackidx(thread, READ_VALUE(size_t));
-    validate(thread->ci->top, thread->stack_last);
+    thread->ci->func.p = eris_restorestackidx(thread, READ_VALUE(size_t));
+    validate(thread->ci->func.p, thread->top.p - 1);
+    thread->ci->top.p = eris_restorestackidx(thread, READ_VALUE(size_t));
+    validate(thread->ci->top.p, thread->stack_last.p);
     thread->ci->nresults = READ_VALUE(int16_t);
     thread->ci->callstatus = READ_VALUE(uint8_t);
 
@@ -1990,7 +1990,7 @@ u_thread(Info *info) {                                                 /* ... */
       thread->ci->u2.funcidx = eris_savestack(thread,
         eris_restorestackidx(thread, READ_VALUE(int)));
       o = eris_restorestack(thread, thread->ci->u2.funcidx);
-      validate(o, thread->top);
+      validate(o, thread->top.p);
       if (eris_ttype(s2v(o)) != LUA_TFUNCTION) {
         eris_error(info, ERIS_ERR_THREADCI);
       }
@@ -2083,7 +2083,7 @@ u_thread(Info *info) {                                                 /* ... */
     pushpath(info, "[%d]", level);
     UNLOCK(thread);
     stk = eris_restorestackidx(thread, offset - 1);
-    validate(stk, thread->top - 1);
+    validate(stk, thread->top.p - 1);
     LOCK(thread);
     unpersist(info);                                        /* ... thread tbl */
     UNLOCK(thread);
@@ -2107,7 +2107,7 @@ u_thread(Info *info) {                                                 /* ... */
         LClosure *cl;
         int nup;
         lua_rawgeti(info->L, -1, i);                    /* ... thread tbl lcl */
-        cl = eris_clLvalue(s2v(info->L->top - 1));
+        cl = eris_clLvalue(s2v(info->L->top.p - 1));
         lua_pop(info->L, 1);                                /* ... thread tbl */
         lua_rawgeti(info->L, -1, i + 1);                /* ... thread tbl nup */
         nup = lua_tointeger(info->L, -1);
